@@ -1,3 +1,5 @@
+import org.gradle.internal.os.OperatingSystem
+
 apply plugin: "java"
 
 sourceCompatibility = 1.6
@@ -52,4 +54,25 @@ task afterEclipseImport(description: "Post processing after project generation",
     printer.setPreserveWhitespace(true)
     printer.print(classpath)
   }
+}
+
+dependencies {
+    switch (OperatingSystem.current()) {
+        case OperatingSystem.WINDOWS:
+            ext.lwjglNatives = "natives-windows"
+            break
+        case OperatingSystem.LINUX:
+            ext.lwjglNatives = "natives-linux"
+            break
+        case OperatingSystem.MAC_OS:
+            ext.lwjglNatives = "natives-macos"
+            break
+    }
+
+    // Look up which modules and versions of LWJGL are required and add setup the approriate natives.
+    configurations.compile.resolvedConfiguration.getResolvedArtifacts().forEach {
+        if (it.moduleVersion.id.group == "org.lwjgl") {
+            runtime "org.lwjgl:${it.moduleVersion.id.name}:${it.moduleVersion.id.version}:${lwjglNatives}"
+        }
+    }
 }

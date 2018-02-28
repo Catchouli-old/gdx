@@ -1,24 +1,36 @@
 package moe.mimikyu.game
 
-import java.util.Base64
-
-import com.badlogic.gdx.{Gdx, Input}
 import com.badlogic.gdx.graphics._
 import com.badlogic.gdx.graphics.g2d.{BitmapFont, SpriteBatch, TextureRegion}
 import com.badlogic.gdx.math.{Matrix4, Vector2}
-import com.badlogic.gdx.scenes.scene2d.Actor
+import com.badlogic.gdx.{Gdx, Input}
+import imgui.impl.LwjglGL3
+import imgui.{ImGui, TreeNodeFlags}
 
 class Game {
+  // Rendering and framework stuff
+  val identity = new Matrix4
+  val camera = new OrthographicCamera(Gdx.graphics.getWidth, Gdx.graphics.getHeight)
   val batch = new SpriteBatch
   val guiFont = new BitmapFont
-  val camera = new OrthographicCamera(Gdx.graphics.getWidth, Gdx.graphics.getHeight)
-  val identity = new Matrix4
+  val imgui = ImGui.INSTANCE
 
-  var playerPos = new Vector2(192, -192)
-  var playerVel = new Vector2(0, 0)
+  // Game state
+  val gameState = new Object {
+    var gravity = 25.0f
 
-  val lvl =
-    """
+    val player = new Object {
+      var position = new Vector2(192, -64)
+      var velocity = new Vector2(0, 0)
+      var acceleration = 200.0f
+      var friction = 20.0f
+      var mass: Option[Float] = None
+      var maxSpeed = 1000.0f
+      var jumpSpeed = 500.0f
+    }
+  }
+
+  val lvl = new Map("""
       |JJJJJJJJJJJJJJJJJJJJJJJJJJJ
       |JAAAAAAAAAAAAAAAAAAAAAAAAAJ
       |JAAAAAAAAAAAAAAAAAAAAAAAAAJ
@@ -27,17 +39,14 @@ class Game {
       |JAAAAAAAAAAAAAAAAAAAAAAAAAJ
       |JAAAAAAAAAAAAAAAAAAAAAAAAAJ
       |JJJJJJJJJJJJJJJJJJJJJJJJJJJ
-  """.stripMargin.trim.split("\n").map(_.replace("\r", "")).map(_.map(decodeTile))
+  """)
 
   val tileWidth = 32
   val tileset = TextureRegion.split(new Texture("fantasy-tileset.png"), tileWidth, tileWidth).flatten
 
-  def decodeTile(c: Char) = {
-    val charMap = Seq('A' to 'Z', 'a' to 'z', '0' to '9', Seq('+', '/')).flatten.zip(0 to 63).toMap
-    charMap(c)
-  }
-
   def update = {
+    val s = gameState
+
     val delta = Gdx.graphics.getDeltaTime
 
     val jumpPressed = Gdx.input.isKeyJustPressed(Input.Keys.UP)
@@ -47,32 +56,33 @@ class Game {
     // todo: different friction when character is touching a floor
     // todo: collide with floors and reset jumping
 
-    val acc = 150.0f
-    val restitution = 20.0f
-    val maxFallSpeed = 1000.0f
-    val accX = if (leftPressed && !rightPressed) -acc else if (rightPressed && !leftPressed) acc else 0.0f
-    val accY = if (jumpPressed && playerPos.y == -192.0f) 500.0f else -25.0f
+    val accX = if (leftPressed && !rightPressed) -s.player.acceleration
+               else if (rightPressed && !leftPressed) s.player.acceleration
+               else 0.0f
+    val accY = if (jumpPressed && s.player.position.y == -192.0f) s.player.jumpSpeed else -s.gravity
 
-    playerVel.x = (playerVel.x + accX) * (1.0f - delta * restitution)
-    playerVel.y = (playerVel.y + accY)
+    s.player.velocity.x = (s.player.velocity.x + accX) * (1.0f - delta * s.player.friction)
+    s.player.velocity.y = (s.player.velocity.y + accY)
 
-    playerVel.y = Math.signum(playerVel.y) * Math.min(Math.abs(playerVel.y), maxFallSpeed)
+    s.player.velocity.y = Math.signum(s.player.velocity.y) *
+       Math.min(Math.abs(s.player.velocity.y), s.player.maxSpeed)
 
-    playerPos.x = playerPos.x + playerVel.x * delta
-    playerPos.y = playerPos.y + playerVel.y * delta
+    s.player.position.x = s.player.position.x + s.player.velocity.x * delta
+    s.player.position.y = s.player.position.y + s.player.velocity.y * delta
 
-    if (playerPos.y < -192.0f) {
-      playerPos.y = -192.0f
-      playerVel.y = 0.0f
+    if (s.player.position.y < -192.0f) {
+      s.player.position.y = -192.0f
+      s.player.velocity.y = 0.0f
     }
   }
 
   def render = {
+    imgui.newFrame
     update
 
     // Main render
-    camera.position.x = playerPos.x
-    camera.position.y = playerPos.y
+    camera.position.x = gameState.player.position.x
+    camera.position.y = gameState.player.position.y
     camera.update
     batch.setProjectionMatrix(camera.combined)
 
@@ -81,14 +91,14 @@ class Game {
 
 		batch.begin
     // Draw level
-    for (y <- lvl.indices) {
-      val row = lvl(y)
+    for (y <- lvl.rows.indices) {
+      val row = lvl.rows(y)
       for (x <- row.indices) {
-        batch.draw(tileset(lvl(y)(x)), x * tileWidth, -y * tileWidth)
+        batch.draw(tileset(lvl.rows(y)(x)), x * tileWidth, -y * tileWidth)
       }
     }
     // Draw player
-    batch.draw(tileset(156), playerPos.x, playerPos.y)
+    batch.draw(tileset(156), gameState.player.position.x, gameState.player.position.y)
 		batch.end
 
     // Gui render
@@ -96,10 +106,60 @@ class Game {
     batch.begin
     guiFont.draw(batch, "hello", 10, 10)
     batch.end
+
+    drawImgui
+  }
+
+  def drawImgui = {
+    val s = gameState
+
+    // Copy values to array references
+    val gravityRef = Array(s.gravity)
+    val playerPos = Array(s.player.position.x, s.player.position.y)
+    val playerVel = Array(s.player.velocity.x, s.player.velocity.y)
+    val playerAcc = Array(s.player.acceleration)
+    val playerFriction = Array(s.player.friction)
+    val playerMass = Array(s.player.mass match { case None => 0.0f; case Some(m) => m })
+
+    imgui.begin("Debug", null, 0)
+      if (imgui.collapsingHeader("Movement", TreeNodeFlags.DefaultOpen.getI())) {
+        imgui.dragFloat("Gravity", gravityRef, 0.1f, -100.0f, 100.0f, "%f", 1.0f)
+        if (imgui.collapsingHeader("Player physics", TreeNodeFlags.DefaultOpen.getI())) {
+          imgui.dragFloat2("Position", playerPos, 1.0f, -10000.0f, 10000.0f, "%f", 1.0f)
+          imgui.dragFloat2("Velocity", playerVel, 1.0f, -10000.0f, 10000.0f, "%f", 1.0f)
+          imgui.dragFloat("Acceleration", playerAcc, 1.0f, -1000.0f, 1000.0f, "%f", 1.0f)
+          imgui.dragFloat("Friction", playerFriction, 0.1f, -1000.0f, 1000.0f, "%f", 1.0f)
+          imgui.dragFloat("Mass", playerMass, 0.1f, 0.0f, 1000.0f, "%f", 1.0f)
+        }
+      }
+    imgui.end()
+
+    // Copy back
+    s.gravity = gravityRef(0)
+    s.player.position.x = playerPos(0)
+    s.player.position.y = playerPos(1)
+    s.player.velocity.x = playerVel(0)
+    s.player.velocity.y = playerVel(1)
+    s.player.acceleration = playerAcc(0)
+    s.player.friction = playerFriction(0)
+    s.player.mass = playerMass(0) match { case 0.0f => None; case m: Float => Some(m) }
+
+    // Render imgui
+    imgui.render()
+    val drawData = imgui.getDrawData()
+    if (drawData != null)
+      LwjglGL3.INSTANCE.renderDrawData(drawData)
   }
 
   def cleanup = {
     batch.dispose
     tileset(0).getTexture.dispose
   }
+
+  def resize(x: Int, y: Int) = {
+    camera.setToOrtho(false, Gdx.graphics.getWidth, Gdx.graphics.getHeight)
+  }
+
+  def pause = {}
+  def resume = {}
 }
